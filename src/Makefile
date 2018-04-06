@@ -4,7 +4,7 @@ CFLAGS += -g -rdynamic
 
 target = librunso.so runso.exe runso.h
 
-all: $(target) demo.exe
+all: $(target)
 
 clean:
 	$(RM) *.o *.so *.exe
@@ -24,6 +24,3 @@ runso.exe: runso.c rs_cs.h rs_msg.h
 
 librunso.so: rs_msg.c rs_msg.h rs_cs.c rs_cs.h
 	$(CC) -fPIC -shared $(CFLAGS) $(LDFLAGS) $(filter %.c,$^) -pthread -o $@
-
-demo.exe: demo.c rs_cs.h rs_msg.h
-	$(CC) $(CFLAGS) $(LDFLAGS) $(filter %.c,$^) -L. -lrunso -o $@
