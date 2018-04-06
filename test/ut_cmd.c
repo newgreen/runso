@@ -58,7 +58,7 @@ int main(int argc, char **argv)
 #endif
 
 #ifdef RS_CLRMSG
-    ret = rs_clr_msgQ();
+    ret = rs_clr_msgQ(0);
     if (ret < 0)
     {
         printf("Error: *** clear msg fail.\n");

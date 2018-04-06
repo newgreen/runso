@@ -62,7 +62,7 @@ int rs_reinit_msgQ(void)
     return rs_init_msgQ();
 }
 
-int rs_clr_msgQ(void)
+static int rs_clr_all_msgQ(void)
 {
     int ret;
     
@@ -81,6 +81,29 @@ int rs_clr_msgQ(void)
     return rs_reinit_msgQ();
 }
 
+int rs_clr_msgQ(int dst_pid)
+{
+    if (!dst_pid)
+    {
+        return rs_clr_all_msgQ();
+    }
+    
+    AUTO_MSG rs_msg_t *msg = rs_alloc_msg();
+    if (!msg)
+    {
+        errno = ENOMEM;
+        return -1;
+    }
+    
+    errno = 0;
+    do 
+    {
+        msgrcv(g_msg_Qid, msg, MSGMAX, getpid(), MSG_NOERROR | IPC_NOWAIT);
+    } while (!errno);
+    
+    return 0;
+}
+
 static inline void init_msg(rs_msg_t *msg, uint32_t msg_size, uint32_t msg_type)
 {
     msg->dst_pid  = rs_get_dst_pid();
@@ -91,6 +114,12 @@ static inline void init_msg(rs_msg_t *msg, uint32_t msg_size, uint32_t msg_type)
 
 int rs_send(const rs_msg_t *msg)
 {
+    if (rs_get_dst_pid() < 0)
+    {
+        errno = EADDRNOTAVAIL;
+        return -1;
+    }
+    
     if (msg->msg_size < sizeof(*msg))
     {
         errno = EINVAL;
@@ -225,7 +254,33 @@ int rs_recv_cmd(rs_cmd_t *cmd)
         return -1;
     }
     
-    return rs_cmd_adjust(cmd);
+    if (rs_cmd_adjust(cmd))
+    {
+        return -1;
+    }
+    
+    return ret;
+}
+
+rs_cmd_t* rs_clone_cmd(const rs_cmd_t *cmd)
+{
+    rs_msg_t *msg = rs_alloc_msg();
+    if (!msg)
+    {
+        errno = ENOMEM;
+        return NULL;
+    }
+    
+    memcpy(msg, &cmd->msg_head, cmd->msg_head.msg_size);
+    
+    rs_cmd_t *clone_cmd = (void*)msg;
+    if (rs_cmd_adjust(clone_cmd))
+    {
+        rs_free_msg(&msg);
+        return NULL;
+    }
+    
+    return clone_cmd;
 }
 
 int rs_log(const char *fmt, ...)

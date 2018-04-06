@@ -4,7 +4,7 @@ CFLAGS += -g -rdynamic
 
 target = librunso.so runso.exe runso.h
 
-all: $(target)
+all: $(target) demo.exe
 
 clean:
 	$(RM) *.o *.so *.exe
@@ -19,8 +19,11 @@ uninstall:
 	-$(RM) /usr/local/lib/librunso.so
 	-$(RM) /usr/local/bin/runso.exe
 
-runso.exe: runso.c
+runso.exe: runso.c rs_cs.h rs_msg.h
 	$(CC) $(CFLAGS) $(LDFLAGS) $(filter %.c,$^) -L. -lrunso -o $@
 
-librunso.so: rs_msg.c rs_msg.h
-	$(CC) -fPIC -shared $(CFLAGS) $(LDFLAGS) $(filter %.c,$^) -o $@
+librunso.so: rs_msg.c rs_msg.h rs_cs.c rs_cs.h
+	$(CC) -fPIC -shared $(CFLAGS) $(LDFLAGS) $(filter %.c,$^) -pthread -o $@
+
+demo.exe: demo.c rs_cs.h rs_msg.h
+	$(CC) $(CFLAGS) $(LDFLAGS) $(filter %.c,$^) -L. -lrunso -o $@

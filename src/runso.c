@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include "rs_msg.h"
+#include "rs_cs.h"
 
 struct rs_cmd_op
 {
@@ -101,7 +102,7 @@ static int convert_so_name(const char *so_name, char *buf, size_t size)
 
 static int clrmsg(const struct rs_cmd_op *op, int argc, char **argv)
 {
-    int ret = rs_clr_msgQ();
+    int ret = rs_clr_msgQ(0);
     if (ret)
     {
         printf("Error: *** clear msg fail, ret %d, errno %d, %s.\n",
@@ -144,7 +145,14 @@ static int send_runso_cmd(const struct rs_cmd_op *op, int argc, char **argv)
         argv[2] = path;
     }
     
-    return rs_send_cmd(argc, argv);
+    rs_set_dst_pid(dst_pid);
+    
+    // remove pid from argv
+    argv[1] = argv[0];
+    argc--;
+    argv++;
+    
+    return rs_execute_client(argc, argv);
 }
 
 static const struct rs_cmd_op g_rs_cmd_op_table[] = 

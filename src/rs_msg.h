@@ -61,13 +61,14 @@ void rs_free_msg(rs_msg_t **pmsg);
 
 int rs_init_msgQ(void);
 int rs_reinit_msgQ(void);
-int rs_clr_msgQ(void);
+int rs_clr_msgQ(int dst_pid);
 
 int rs_send(const rs_msg_t *msg);
 int rs_recv(rs_msg_t *msg);
 
 int rs_send_cmd(int32_t argc, char **argv);
 int rs_recv_cmd(rs_cmd_t *cmd);
+rs_cmd_t* rs_clone_cmd(const rs_cmd_t *cmd);
 
 int rs_log(const char *fmt, ...);
 int rs_done(int rs_rc, int usr_rc);
