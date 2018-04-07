@@ -5,23 +5,7 @@
 #include <pthread.h>
 #include "rs_msg.h"
 #include "rs_cs.h"
-
-// TODO:
-static int runso(
-        int      client_pid, 
-        int32_t  argc, 
-        char   **argv, 
-        int32_t *usr_retcode)
-{
-    rs_log(client_pid, "[server]recv cmd:\n");
-    for (int i = 0; i < argc; i++)
-    {
-        rs_log(client_pid, "[server][%d]: %s\n", i, argv[i]);
-    }
-    
-    *usr_retcode = 0;
-    return 0;
-}
+#include "rs_runso.h"
 
 int rs_execute_client(int srv_pid, int argc, char **argv)
 {
@@ -159,7 +143,7 @@ static void* rs_server_thread_handle_cmd(void *arg)
     }
     else
     {
-        rs_retcode = runso(msg->src_pid, cmd->argc, cmd->argv, &usr_retcode);
+        rs_retcode = rs_runso(msg->src_pid, cmd->argc, cmd->argv, &usr_retcode);
     }
     
     (void)rs_done(msg->src_pid, rs_retcode, usr_retcode);

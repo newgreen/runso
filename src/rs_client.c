@@ -141,14 +141,14 @@ static const struct rs_cmd_op g_rs_cmd_op_table[] =
 {
     {
         "load", 
-        "load <pid> <so_name> [ arg0 arg1 ... ]", 
+        "load   <pid> <so_name> [ arg0 arg1 ... ]", 
         check_runso_args, 
         send_runso_cmd
     },
     
     {
         "runso", 
-        "runso <pid> <so_name> [ arg0 arg1 ... ]", 
+        "runso  <pid> <so_name> [ arg0 arg1 ... ]", 
         check_runso_args, 
         send_runso_cmd
     },

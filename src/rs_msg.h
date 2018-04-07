@@ -2,6 +2,7 @@
 #define _RS_MSG_H_
 
 #include <stdint.h>
+#include "runso.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,7 +70,6 @@ int rs_recv_cmd(rs_cmd_t *cmd);
 int rs_cmd_adjust(rs_cmd_t *cmd);
 rs_cmd_t* rs_clone_cmd(const rs_cmd_t *cmd);
 
-int rs_log(int dst_pid, const char *fmt, ...);
 int rs_done(int dst_pid, int rs_rc, int usr_rc);
 
 #ifdef __cplusplus

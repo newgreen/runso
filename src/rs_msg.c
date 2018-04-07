@@ -285,6 +285,12 @@ rs_cmd_t* rs_clone_cmd(const rs_cmd_t *cmd)
 
 int rs_log(int dst_pid, const char *fmt, ...)
 {
+    if (dst_pid < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    
     AUTO_MSG rs_msg_t *msg = rs_alloc_msg();
     if (!msg)
     {
