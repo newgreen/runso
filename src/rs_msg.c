@@ -9,20 +9,6 @@
 #include <sys/msg.h>
 #include "rs_msg.h"
 
-static int (*local_log)(const char *, ...) = printf;
-
-static __thread int g_dst_pid = -1;
-
-void rs_set_dst_pid(int pid)
-{
-    g_dst_pid = pid;
-}
-
-int rs_get_dst_pid(void)
-{
-    return g_dst_pid;
-}
-
 rs_msg_t* rs_alloc_msg(void)
 {
     return malloc(MSGMAX);
@@ -37,7 +23,7 @@ void rs_free_msg(rs_msg_t **pmsg)
     }
 }
 
-static const int g_msg_key = 0x545352; // 'RST'
+static const int g_msg_key = 0x545352; // 'RST' means run so tool
 static int g_msg_Qid = -1;
 
 int rs_init_msgQ(void)
@@ -62,30 +48,12 @@ int rs_reinit_msgQ(void)
     return rs_init_msgQ();
 }
 
-static int rs_clr_all_msgQ(void)
+int rs_clr_msgQ(int pid)
 {
-    int ret;
-    
-    ret = rs_init_msgQ();
-    if (ret < 0)
+    if (g_msg_Qid < 0)
     {
-        return ret;
-    }
-    
-    ret = msgctl(g_msg_Qid, IPC_RMID, NULL);
-    if (ret < 0)
-    {
-        return ret;
-    }
-    
-    return rs_reinit_msgQ();
-}
-
-int rs_clr_msgQ(int dst_pid)
-{
-    if (!dst_pid)
-    {
-        return rs_clr_all_msgQ();
+        errno = EIDRM;
+        return -1;
     }
     
     AUTO_MSG rs_msg_t *msg = rs_alloc_msg();
@@ -98,23 +66,46 @@ int rs_clr_msgQ(int dst_pid)
     errno = 0;
     do 
     {
-        msgrcv(g_msg_Qid, msg, MSGMAX, getpid(), MSG_NOERROR | IPC_NOWAIT);
+        // recv all msg if pid == 0
+        msgrcv(g_msg_Qid, msg, MSGMAX, pid, MSG_NOERROR | IPC_NOWAIT);
     } while (!errno);
     
     return 0;
 }
 
-static inline void init_msg(rs_msg_t *msg, uint32_t msg_size, uint32_t msg_type)
+int rs_destroy_msgQ(void)
 {
-    msg->dst_pid  = rs_get_dst_pid();
+    if (g_msg_Qid < 0)
+    {
+        errno = EIDRM;
+        return -1;
+    }
+    
+    int ret = msgctl(g_msg_Qid, IPC_RMID, NULL);
+    if (ret < 0)
+    {
+        return ret;
+    }
+    
+    g_msg_Qid = -1;
+    return 0;
+}
+
+static inline void init_msg(
+        rs_msg_t *msg, 
+        int       dst_pid,
+        uint32_t  msg_type, 
+        uint32_t  msg_size)
+{
+    msg->dst_pid  = dst_pid;
     msg->src_pid  = getpid();
-    msg->msg_size = msg_size;
     msg->msg_type = msg_type;
+    msg->msg_size = msg_size;
 }
 
 int rs_send(const rs_msg_t *msg)
 {
-    if (rs_get_dst_pid() < 0)
+    if (msg->dst_pid < 0)
     {
         errno = EADDRNOTAVAIL;
         return -1;
@@ -126,6 +117,7 @@ int rs_send(const rs_msg_t *msg)
         return -1;
     }
     
+    // init msgQ automatically
     int ret = rs_init_msgQ();
     if (ret < 0)
     {
@@ -140,24 +132,32 @@ static inline int max(int x, int y)
     return x > y ? x : y;
 }
 
-int rs_recv(rs_msg_t *msg)
+int rs_recv(rs_msg_t *msg, int msg_size)
 {
-    int ret;
+    if (msg_size < sizeof(*msg))
+    {
+        errno = EINVAL;
+        return -1;
+    }
     
-    ret = rs_init_msgQ();
+    int max_buf_size = msg_size - sizeof(long);
+    
+    // init msgQ automatically
+    int ret = rs_init_msgQ();
     if (ret < 0)
     {
         return ret;
     }
     
     msg->msg_size = 0;
-    
-    ret = msgrcv(g_msg_Qid, msg, MSGMAX, getpid(), MSG_NOERROR);
+    ret = msgrcv(g_msg_Qid, msg, max_buf_size, getpid(), MSG_NOERROR);
     if (ret < 0)
     {
+        // init msgQ for next recv
         if (errno == EIDRM)
         {
             rs_reinit_msgQ();
+            errno = EIDRM; // don't change errno
         }
         
         return -1;
@@ -166,17 +166,67 @@ int rs_recv(rs_msg_t *msg)
     int size = max(sizeof(*msg), msg->msg_size) - sizeof(long);
     if (ret < size)
     {
-        errno = E2BIG;
+        errno = ERANGE;
         return -1;
     }
     
-    if (msg->msg_size <= 0)
+    if (msg->msg_size < sizeof(*msg))
     {
         errno = EINVAL;
         return -1;
     }
     
     return msg->msg_size;
+}
+
+static int rs_cmd_init(rs_cmd_t *cmd, int dst_pid, int32_t argc, char **argv)
+{
+    if (argc >= RS_MAX_ARG_NUM)
+    {
+        errno = E2BIG;
+        return -1;
+    }
+    
+    uint32_t cmd_len = sizeof(*cmd);
+    char *tail = cmd->str;
+    
+    cmd->base_addr = cmd;
+    for (cmd->argc = 0; cmd->argc < argc; cmd->argc++)
+    {
+        int str_len = strlen(argv[cmd->argc]) + 1;
+        
+        cmd_len += str_len;
+        if (cmd_len > MSGMAX)
+        {
+            errno = ERANGE;
+            return -1;
+        }
+        
+        cmd->argv[cmd->argc] = memcpy(tail, argv[cmd->argc], str_len);
+        tail += str_len;
+    }
+    
+    init_msg(&cmd->msg_head, dst_pid, RS_MSG_CMD, cmd_len);
+    
+    return 0;
+}
+
+int rs_send_cmd(int dst_pid, int32_t argc, char **argv)
+{
+    AUTO_MSG rs_msg_t *msg = rs_alloc_msg();
+    if (!msg)
+    {
+        errno = ENOMEM;
+        return -1;
+    }
+    
+    int ret = rs_cmd_init((void*)msg, dst_pid, argc, argv);
+    if (ret < 0)
+    {
+        return -1;
+    }
+    
+    return rs_send(msg);
 }
 
 int rs_cmd_adjust(rs_cmd_t *cmd)
@@ -196,59 +246,9 @@ int rs_cmd_adjust(rs_cmd_t *cmd)
     return 0;
 }
 
-int rs_cmd_init(rs_cmd_t *cmd, int32_t argc, char **argv)
-{
-    if (argc >= RS_MAX_ARG_NUM)
-    {
-        errno = EINVAL;
-        return -1;
-    }
-    
-    uint32_t cmd_len = sizeof(*cmd);
-    char *tail = cmd->str;
-    
-    cmd->base_addr = cmd;
-    for (cmd->argc = 0; cmd->argc < argc; cmd->argc++)
-    {
-        int str_len = strlen(argv[cmd->argc]) + 1;
-        
-        cmd_len += str_len;
-        if (cmd_len > MSGMAX)
-        {
-            errno = E2BIG;
-            return -1;
-        }
-        
-        cmd->argv[cmd->argc] = memcpy(tail, argv[cmd->argc], str_len);
-        tail += str_len;
-    }
-    
-    init_msg(&cmd->msg_head, cmd_len, RS_MSG_CMD);
-    
-    return 0;
-}
-
-int rs_send_cmd(int32_t argc, char **argv)
-{
-    AUTO_MSG rs_msg_t *msg = rs_alloc_msg();
-    if (!msg)
-    {
-        errno = ENOMEM;
-        return -1;
-    }
-    
-    int ret = rs_cmd_init((void*)msg, argc, argv);
-    if (ret < 0)
-    {
-        return -1;
-    }
-    
-    return rs_send(msg);
-}
-
 int rs_recv_cmd(rs_cmd_t *cmd)
 {
-    int ret = rs_recv(&cmd->msg_head);
+    int ret = rs_recv(&cmd->msg_head, MSGMAX);
     if (ret < 0)
     {
         return -1;
@@ -283,7 +283,7 @@ rs_cmd_t* rs_clone_cmd(const rs_cmd_t *cmd)
     return clone_cmd;
 }
 
-int rs_log(const char *fmt, ...)
+int rs_log(int dst_pid, const char *fmt, ...)
 {
     AUTO_MSG rs_msg_t *msg = rs_alloc_msg();
     if (!msg)
@@ -306,19 +306,11 @@ int rs_log(const char *fmt, ...)
         return -1;
     }
     
-    int dst_pid = rs_get_dst_pid();
-    if (dst_pid < 0)
-    {
-        local_log("%s\n", log->str);
-        return 0;
-    }
-    
-    init_msg(msg, sizeof(*log) + len, RS_MSG_LOG);
-    
+    init_msg(msg, dst_pid, RS_MSG_LOG, sizeof(*log) + len);
     return rs_send(msg);
 }
 
-int rs_done(int rs_rc, int usr_rc)
+int rs_done(int dst_pid, int rs_rc, int usr_rc)
 {
     rs_done_t done =
     {
@@ -326,6 +318,6 @@ int rs_done(int rs_rc, int usr_rc)
         .usr_retcode = usr_rc
     };
     
-    init_msg(&done.msg_head, sizeof(done), RS_MSG_DONE);
+    init_msg(&done.msg_head, dst_pid, RS_MSG_DONE, sizeof(done));
     return rs_send(&done.msg_head);
 }

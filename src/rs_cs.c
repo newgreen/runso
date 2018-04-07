@@ -6,11 +6,28 @@
 #include "rs_msg.h"
 #include "rs_cs.h"
 
-int rs_execute_client(int argc, char **argv)
+// TODO:
+static int runso(
+        int      client_pid, 
+        int32_t  argc, 
+        char   **argv, 
+        int32_t *usr_retcode)
 {
-    if (rs_get_dst_pid() < 0)
+    rs_log(client_pid, "[server]recv cmd:\n");
+    for (int i = 0; i < argc; i++)
     {
-        printf("Error: *** not set dest pid.\n");
+        rs_log(client_pid, "[server][%d]: %s\n", i, argv[i]);
+    }
+    
+    *usr_retcode = 0;
+    return 0;
+}
+
+int rs_execute_client(int srv_pid, int argc, char **argv)
+{
+    if (srv_pid < 0)
+    {
+        printf("Error: *** invalid server pid %d.\n", srv_pid);
         return -1;
     }
     
@@ -21,15 +38,15 @@ int rs_execute_client(int argc, char **argv)
         return -1;
     }
     
-    int ret = rs_send_cmd(argc, argv);
+    int ret = rs_send_cmd(srv_pid, argc, argv);
     if (ret < 0)
     {
-        printf("Error: *** send cmd to server fail, errno %d, %s.\n", 
+        printf("Error: *** send cmd fail, errno %d, %s.\n", 
             errno, strerror(errno));
         return -1;
     }
     
-    while ((ret = rs_recv(msg)) >= 0 && msg->msg_type == RS_MSG_LOG)
+    while ((ret = rs_recv(msg, MSGMAX)) >= 0 && msg->msg_type == RS_MSG_LOG)
     {
         rs_log_t *log = (void*)msg;
         printf("%s", log->str);
@@ -55,9 +72,9 @@ int rs_execute_client(int argc, char **argv)
 static const char *g_server_state_str[RS_SERVER_BUTT] = 
 {
     "initial",
-    "start",
-    "run",
-    "stop"
+    "started",
+    "running",
+    "stopping"
 };
 
 typedef struct
@@ -94,6 +111,11 @@ static int rs_get_srv_state(void)
     return g_srv_state.state;
 }
 
+static int rs_get_cmd_cnt(void)
+{
+    return g_srv_state.cmd_cnt;
+}
+
 static int rs_inc_cmd(void)
 {
     return __sync_add_and_fetch(&g_srv_state.cmd_cnt, 1);
@@ -101,38 +123,25 @@ static int rs_inc_cmd(void)
 
 static int rs_dec_cmd(void)
 {
-    return __sync_sub_and_fetch(&g_srv_state.cmd_cnt, 1);
-}
-
-static int rs_get_cmd_cnt(void)
-{
-    return g_srv_state.cmd_cnt;
-}
-
-static int runso(int32_t argc, char **argv, int32_t *usr_retcode)
-{
-    rs_log("[server]recv cmd:\n");
-    for (int i = 0; i < argc; i++)
+    int cmd_cnt = __sync_sub_and_fetch(&g_srv_state.cmd_cnt, 1);
+    if (!cmd_cnt && g_srv_state.state == RS_SERVER_STOP)
     {
-        rs_log("[server][%d]: %s\n", i, argv[i]);
+        if (rs_chg_srv_state(NULL, RS_SERVER_STOP, RS_SERVER_INIT))
+        {
+            printf("Info: server is stopped when dec cmd.\n");
+        }
     }
-    
-    *usr_retcode = 0;
-    return 0;
+    return cmd_cnt;
 }
 
-static void* rs_server_handle_cmd_thread(void *arg)
+static void* rs_server_thread_handle_cmd(void *arg)
 {
     pthread_detach(pthread_self());
     
     rs_cmd_t *cmd = arg;
     AUTO_MSG rs_msg_t *msg = &cmd->msg_head;
     
-    if (msg->src_pid > 0)
-    {
-        rs_set_dst_pid(msg->src_pid);
-    }
-    else
+    if (msg->src_pid <= 0)
     {
         printf("Error: *** src pid is unknown.\n");
         return NULL;
@@ -143,25 +152,18 @@ static void* rs_server_handle_cmd_thread(void *arg)
     
     if (msg->msg_type != RS_MSG_CMD)
     {
-        rs_log("Error: *** it's not cmd msg, msg_type %d, func %s, line %d.\n",
+        rs_log(msg->src_pid,
+            "Error: *** it's not cmd msg, msg_type %d, func %s, line %d.\n",
             msg->msg_type, __func__, __LINE__);
         rs_retcode = -1;
     }
     else
     {
-        rs_retcode = runso(cmd->argc, cmd->argv, &usr_retcode);
+        rs_retcode = runso(msg->src_pid, cmd->argc, cmd->argv, &usr_retcode);
     }
     
-    (void)rs_done(rs_retcode, usr_retcode);
-    
-    int cmd_cnt = rs_dec_cmd();
-    if (!cmd_cnt && g_srv_state.state == RS_SERVER_STOP)
-    {
-        if (rs_chg_srv_state(NULL, RS_SERVER_STOP, RS_SERVER_INIT))
-        {
-            printf("Info: server is stopped at cmd thread.\n");
-        }
-    }
+    (void)rs_done(msg->src_pid, rs_retcode, usr_retcode);
+    (void)rs_dec_cmd();
     
     return NULL;
 }
@@ -178,7 +180,7 @@ static int rs_handle_cmd(const rs_cmd_t *cmd)
     (void)rs_inc_cmd();
     
     pthread_t tid;
-    int ret = pthread_create(&tid, NULL, rs_server_handle_cmd_thread, new_cmd);
+    int ret = pthread_create(&tid, NULL, rs_server_thread_handle_cmd, new_cmd);
     if (ret)
     {
         (void)rs_dec_cmd();
@@ -203,23 +205,27 @@ static void* rs_server_thread(void *arg)
     (void)rs_chg_srv_state(NULL, RS_SERVER_START, RS_SERVER_RUN);
     while (rs_get_srv_state() == RS_SERVER_RUN)
     {
-        rs_cmd_t *cmd = (void*)msg;
-        int ret = rs_recv_cmd(cmd);
+        int ret = rs_recv(msg, MSGMAX);
         if (ret < 0)
         {
-            usleep(300 * 1000); // 300 ms
+            usleep(300 * 1000); // delay 300ms
             continue;
         }
         
         if (msg->msg_type == RS_MSG_DONE)
         {
+            (void)rs_clr_msgQ(getpid());
             (void)rs_chg_srv_state(NULL, RS_SERVER_RUN, RS_SERVER_STOP);
             break;
         }
         
         if (msg->msg_type == RS_MSG_CMD)
         {
-            rs_handle_cmd((rs_cmd_t*)msg);
+            rs_cmd_t *cmd = (void*)msg;
+            if (!rs_cmd_adjust(cmd))
+            {
+                rs_handle_cmd(cmd);
+            }
         }
     }
     
@@ -230,6 +236,7 @@ static void* rs_server_thread(void *arg)
             printf("Info: server is stopped at server thread.\n");
         }
     }
+    
     return NULL;
 }
 
@@ -246,6 +253,8 @@ int rs_start_server(void)
         return -1;
     }
     
+    (void)rs_clr_msgQ(getpid());
+    
     ret = pthread_create(&tid, NULL, rs_server_thread, NULL);
     if (ret)
     {
@@ -259,18 +268,17 @@ int rs_start_server(void)
 
 int rs_stop_server(void)
 {
-    rs_set_dst_pid(getpid());
-    (void)rs_done(0, 0);
+    int srv_pid = getpid();
+    (void)rs_done(srv_pid, 0, 0);
     
-    usleep(100 * 1000); // delay 100 ms
-    
+    usleep(100 * 1000); // delay 100 ms, waitting server stopped
     if (rs_get_srv_state() != RS_SERVER_INIT)
     {
         printf("Error: *** server is not stopped, state %d, cmd_cnt %d.\n",
             rs_get_srv_state(), rs_get_cmd_cnt());
         return -1;
     }
-
+    
     return 0;
 }
 

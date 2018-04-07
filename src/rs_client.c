@@ -23,11 +23,6 @@ static const char* app_name(void)
     return "runso.exe";
 }
 
-static int check_default(const struct rs_cmd_op *op, int argc, char **argv)
-{
-    return 0;
-}
-
 static int parse_pid(char *nptr, int *pid)
 {
     char *endptr = NULL;
@@ -85,7 +80,7 @@ static int convert_so_name(const char *so_name, char *buf, size_t size)
         return -1;
     }
     
-    AUTO_STR char *path = getcwd(NULL, 0);
+    AUTO_STR char *path = getcwd(NULL, 0); // free path automatically
     if (!path)
     {
         return -1;
@@ -98,17 +93,6 @@ static int convert_so_name(const char *so_name, char *buf, size_t size)
     
     snprintf(buf, size, "%s/%s", path, so_name);
     return access(buf, R_OK);
-}
-
-static int clrmsg(const struct rs_cmd_op *op, int argc, char **argv)
-{
-    int ret = rs_clr_msgQ(0);
-    if (ret)
-    {
-        printf("Error: *** clear msg fail, ret %d, errno %d, %s.\n",
-            ret, errno, strerror(errno));
-    }
-    return ret;
 }
 
 static int check_runso_args(const struct rs_cmd_op *op, int argc, char **argv)
@@ -145,28 +129,33 @@ static int send_runso_cmd(const struct rs_cmd_op *op, int argc, char **argv)
         argv[2] = path;
     }
     
-    rs_set_dst_pid(dst_pid);
-    
     // remove pid from argv
     argv[1] = argv[0];
     argc--;
     argv++;
     
-    return rs_execute_client(argc, argv);
+    return rs_execute_client(dst_pid, argc, argv);
 }
 
 static const struct rs_cmd_op g_rs_cmd_op_table[] = 
 {
     {
-        "clrmsg", 
-        "clrmsg", 
-        check_default, 
-        clrmsg
+        "load", 
+        "load <pid> <so_name> [ arg0 arg1 ... ]", 
+        check_runso_args, 
+        send_runso_cmd
     },
     
     {
         "runso", 
         "runso <pid> <so_name> [ arg0 arg1 ... ]", 
+        check_runso_args, 
+        send_runso_cmd
+    },
+    
+    {
+        "unload", 
+        "unload <pid> <so_name> [ arg0 arg1 ... ]", 
         check_runso_args, 
         send_runso_cmd
     },
