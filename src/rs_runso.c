@@ -183,5 +183,12 @@ int rs_runso(int client_pid, int argc, char **argv, int *usr_retcode)
     }
     
     *usr_retcode = entry(argc, argv);
+    
+    // set handle NULL to avoid close
+    if (op == RS_RUNSO_LOAD && !*usr_retcode)
+    {
+        handle = NULL;
+    }
+    
     return 0;
 }
